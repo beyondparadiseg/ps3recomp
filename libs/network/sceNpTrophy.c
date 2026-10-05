@@ -402,6 +402,14 @@ s32 sceNpTrophyGetGameInfo(SceNpTrophyContext context,
                 SCE_NP_TROPHY_GAME_TITLE_MAX_SIZE - 1);
         strncpy(details->description, "Trophy set",
                 SCE_NP_TROPHY_GAME_DESC_MAX_SIZE - 1);
+        /* Guest memory is big-endian. Stored host-order, 32 read back as
+         * 0x20000000 and Drakengard 3 sized an allocation off it (2.5 GB ->
+         * FMallocPS3DL OOM). */
+        details->numTrophies = ps3_bswap32(details->numTrophies);
+        details->numPlatinum = ps3_bswap32(details->numPlatinum);
+        details->numGold     = ps3_bswap32(details->numGold);
+        details->numSilver   = ps3_bswap32(details->numSilver);
+        details->numBronze   = ps3_bswap32(details->numBronze);
     }
 
     if (data) {
@@ -413,6 +421,11 @@ s32 sceNpTrophyGetGameInfo(SceNpTrophyContext context,
         data->unlockedGold     = 0;
         data->unlockedSilver   = 0;
         data->unlockedBronze   = data->unlockedTrophies;
+        data->unlockedTrophies = ps3_bswap32(data->unlockedTrophies);   /* guest BE */
+        data->unlockedPlatinum = ps3_bswap32(data->unlockedPlatinum);
+        data->unlockedGold     = ps3_bswap32(data->unlockedGold);
+        data->unlockedSilver   = ps3_bswap32(data->unlockedSilver);
+        data->unlockedBronze   = ps3_bswap32(data->unlockedBronze);
     }
 
     printf("[sceNpTrophy] GetGameInfo(ctx=%d)\n", context);
@@ -451,6 +464,8 @@ s32 sceNpTrophyGetTrophyInfo(SceNpTrophyContext context,
         snprintf(details->description, SCE_NP_TROPHY_DESC_MAX_SIZE,
                  "Trophy #%d description", trophyId);
         details->hidden = 0;
+        details->trophyId    = ps3_bswap32(details->trophyId);      /* guest BE */
+        details->trophyGrade = ps3_bswap32(details->trophyGrade);
     }
 
     if (data) {
@@ -458,6 +473,8 @@ s32 sceNpTrophyGetTrophyInfo(SceNpTrophyContext context,
         data->trophyId = (u32)trophyId;
         data->unlocked = s_contexts[context].unlocked[trophyId];
         data->timestamp = s_contexts[context].unlock_time[trophyId];
+        data->timestamp = ps3_bswap64(data->timestamp);             /* guest BE */
+        data->trophyId  = ps3_bswap32(data->trophyId);
     }
 
     return CELL_OK;

@@ -313,6 +313,38 @@ void cellGame_init_from_paramsfo(const char* sfo_path)
 /* Central title-id accessor so other modules (cellSysutil etc.) don't hardcode it. */
 const char* cellGame_get_title_id(void) { return s_title_id; }
 
+/* True when the boot title has an installed update: <content_root>/<id>/PARAM.SFO
+ * exists with CATEGORY "GD" (a game-data patch). */
+static int game_has_patch(void)
+{
+    if (s_game_type != CELL_GAME_GAMETYPE_DISC) return 0;
+    char sfo[CELL_GAME_PATH_MAX], cat[16];
+    snprintf(sfo, sizeof sfo, "%s/%s/PARAM.SFO", content_root(), s_title_id);
+    return sfo_read_string(sfo, "CATEGORY", cat, sizeof cat) == 0 && strcmp(cat, "GD") == 0;
+}
+
+/* cellGamePatchCheck: open a content-check session on the boot title's update
+ * dir, so the following cellGameContentPermit returns /dev_hdd0/game/<id>. */
+s32 cellGamePatchCheck(CellGameContentSize* size, void* reserved)
+{
+    (void)reserved;
+    if (!game_has_patch()) {
+        printf("[cellGame] PatchCheck() -> NOTPATCH\n");
+        return CELL_GAME_ERROR_NOTPATCH;
+    }
+    uint32_t size_ea = (uint32_t)(uintptr_t)size;
+    if (size_ea) {
+        vm_write32(size_ea + 0, (u32)content_free_kb());
+        vm_write32(size_ea + 4, (uint32_t)CELL_GAME_SIZEKB_NOTCALC);
+        vm_write32(size_ea + 8, 0);
+    }
+    s_check_is_disc = 0;
+    strncpy(s_check_dir, s_title_id, sizeof(s_check_dir) - 1);
+    s_check_dir[sizeof(s_check_dir) - 1] = '\0';
+    printf("[cellGame] PatchCheck() -> /dev_hdd0/game/%s\n", s_check_dir);
+    return CELL_OK;
+}
+
 s32 cellGameBootCheck(u32* type, u32* attributes, CellGameContentSize* size,
                        char* dirName)
 {
@@ -342,7 +374,13 @@ s32 cellGameBootCheck(u32* type, u32* attributes, CellGameContentSize* size,
     uint32_t dir_ea  = (uint32_t)(uintptr_t)dirName;
 
     if (type_ea) vm_write32(type_ea, (uint32_t)s_game_type);
-    if (attr_ea) vm_write32(attr_ea, 0);
+    /* A disc title with an installed update (/dev_hdd0/game/<title>/ holding a
+     * PARAM.SFO of CATEGORY "GD") boots with CELL_GAME_ATTRIBUTE_PATCH, as on
+     * the console. Titles key their patch-data lookup off it and then call
+     * cellGamePatchCheck + ContentPermit for the update dir; without it a
+     * patched EBOOT reads only disc data (Drakengard 3 v1.01: SHA-1 mismatch
+     * on COALESCED_INT.BIN -> "IO Failure" -> BROKEN_EXIT_GAMEDATA). */
+    if (attr_ea) vm_write32(attr_ea, game_has_patch() ? CELL_GAME_ATTRIBUTE_PATCH : 0);
 
     if (size_ea) {
         vm_write32(size_ea + 0, (u32)content_free_kb());

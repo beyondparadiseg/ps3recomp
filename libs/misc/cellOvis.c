@@ -32,12 +32,23 @@ s32 cellOvisTerm(void)
     return CELL_OK;
 }
 
-s32 cellOvisGetOverlayTableSize(const char* filePath, u32* tableSize)
+/* Firmware signature: s32 cellOvisGetOverlayTableSize(const char* elf) -- the
+ * table size IS the return value; there is no out-param and no Init call in
+ * front of it (cellOvisInit is not a firmware export). The old version wanted
+ * a second pointer and an Init, so titles got CELL_OVIS_ERROR_NOT_INITIALIZED
+ * (0x80410785) back as the "size": Drakengard 3 malloc'd 2 GB off it and died
+ * in FMallocPS3DL OOM. We load no PPU overlays, so the table is empty. */
+s32 cellOvisGetOverlayTableSize(const char* elf)
 {
-    (void)filePath;
-    if (!s_initialized) return (s32)CELL_OVIS_ERROR_NOT_INITIALIZED;
-    if (!tableSize) return (s32)CELL_OVIS_ERROR_INVALID_ARGUMENT;
-    vm_write32((u32)(uintptr_t)tableSize, (u32)0);
+    (void)elf;
+    printf("[cellOvis] GetOverlayTableSize() -> 0\n");
+    return 0;
+}
+
+s32 cellOvisInitializeOverlayTable(void* ea_ovly_table, const char* elf)
+{
+    (void)ea_ovly_table; (void)elf;
+    printf("[cellOvis] InitializeOverlayTable()\n");
     return CELL_OK;
 }
 

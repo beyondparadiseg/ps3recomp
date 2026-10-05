@@ -27,7 +27,8 @@ typedef u32 CellOvisHandle;
 s32 cellOvisInit(void);
 s32 cellOvisTerm(void);
 
-s32 cellOvisGetOverlayTableSize(const char* filePath, u32* tableSize);
+s32 cellOvisGetOverlayTableSize(const char* elf);
+s32 cellOvisInitializeOverlayTable(void* ea_ovly_table, const char* elf);
 s32 cellOvisCreateOverlay(const void* table, u32 tableSize, CellOvisHandle* handle);
 s32 cellOvisDestroyOverlay(CellOvisHandle handle);
 

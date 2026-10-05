@@ -2214,6 +2214,31 @@ class PPULifter:
                     f"uint8_t* d = (uint8_t*)&ctx->vr[{vd}]; "
                     f"for (int i = 0; i < 16; i++) d[i] = ((uint32_t)i >= 16u - sh) ? m[i - (int)(16u - sh)] : 0; }}")
 
+        # Cell unaligned vector stores, the mirror of lvlx/lvrx. stvlx writes
+        # the leftmost (16 - sh) bytes of vS to [EA .. end of its quadword];
+        # stvrx writes the rightmost sh bytes of vS to [aligned EA .. EA-1]
+        # (nothing when EA is aligned). Paired as stvlx(EA)+stvrx(EA+16) they
+        # form one unaligned 16-byte store. stv?xl only adds a cache hint.
+        if mn == "stvlx" or mn == "stvlxl":
+            vs = int(ops[0][1:]) if ops[0].startswith("v") else _reg_idx(ops[0])
+            ra = _reg_idx(ops[1])
+            rb = _reg_idx(ops[2])
+            return (f"{{ uint64_t ea = {_xea(ra,rb)}; "
+                    f"uint32_t sh = (uint32_t)(ea & 0xF); "
+                    f"uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); "
+                    f"const uint8_t* s = (const uint8_t*)&ctx->vr[{vs}]; "
+                    f"for (uint32_t i = 0; i < 16u - sh; i++) m[sh + i] = s[i]; }}")
+
+        if mn == "stvrx" or mn == "stvrxl":
+            vs = int(ops[0][1:]) if ops[0].startswith("v") else _reg_idx(ops[0])
+            ra = _reg_idx(ops[1])
+            rb = _reg_idx(ops[2])
+            return (f"{{ uint64_t ea = {_xea(ra,rb)}; "
+                    f"uint32_t sh = (uint32_t)(ea & 0xF); "
+                    f"uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); "
+                    f"const uint8_t* s = (const uint8_t*)&ctx->vr[{vs}]; "
+                    f"for (uint32_t i = 0; i < sh; i++) m[i] = s[16u - sh + i]; }}")
+
         if mn == "lvebx" or mn == "lvehx" or mn == "lvewx":
             vd = int(ops[0][1:]) if ops[0].startswith("v") else _reg_idx(ops[0])
             ra = _reg_idx(ops[1])
@@ -2943,6 +2968,18 @@ class PPULifter:
                     f"int16_t* b=(int16_t*)&ctx->vr[{vb}]; "
                     f"for(int i=0;i<8;i++){{int32_t v=a[i]; d[i]=(int8_t)(v>127?127:v<-128?-128:v);}} "
                     f"for(int i=0;i<8;i++){{int32_t v=b[i]; d[8+i]=(int8_t)(v>127?127:v<-128?-128:v);}} }}")
+
+        # Pack signed word -> signed halfword, saturating (vpkswss). vD's eight
+        # halfwords are sat16(vA.w[0..3]) then sat16(vB.w[0..3]). Lanes are
+        # big-endian in ctx->vr: words load through ppu_vldu4 and halfwords are
+        # written back high byte first. VSCR[SAT] is not modelled.
+        if mn == "vpkswss":
+            vd, va, vb = int(ops[0][1:]), int(ops[1][1:]), int(ops[2][1:])
+            return (f"{{ uint32_t a[4], b[4]; ppu_vldu4(&ctx->vr[{va}],a); ppu_vldu4(&ctx->vr[{vb}],b); "
+                    f"uint8_t* d=(uint8_t*)&ctx->vr[{vd}]; "
+                    f"for(int i=0;i<8;i++){{int32_t v=(int32_t)(i<4?a[i]:b[i-4]); "
+                    f"int32_t s=v>32767?32767:v<-32768?-32768:v; uint16_t u=(uint16_t)s; "
+                    f"d[2*i]=(uint8_t)(u>>8); d[2*i+1]=(uint8_t)u;}} }}")
 
         # Pack unsigned halfword -> unsigned byte, saturating (vpkuhus).
         # The saturating packs are the back half of a colour-conversion kernel:
