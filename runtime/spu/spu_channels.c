@@ -1859,7 +1859,11 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
             }
             yz_lockstep_block_begin(ctx);
             spu_taskset_parked_add(ts, tid, wobj);
-            spu_taskset_wait_signal(ts, tid);
+            /* An LFQueue push may have landed between the popper registering
+             * in the queue and parking here: it latched the wake on the queue
+             * EA (spu_lfq_wake_waiter). Consume it instead of sleeping. */
+            { extern int spu_obj_consume_wake(uint32_t);
+              if (!spu_obj_consume_wake(wobj)) spu_taskset_wait_signal(ts, tid); }
             spu_taskset_parked_del(ts, tid);
             yz_lockstep_block_end(ctx);
             spu_ef_deliver_owed(ctx, wobj);

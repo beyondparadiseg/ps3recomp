@@ -999,6 +999,39 @@ int spu_taskset_signal_parked_obj(uint32_t taskset_ea, uint32_t wait_obj)
 }
 
 /* Deliver a signal to a task (callable from any PPU/host thread). */
+/* LFQueue wake-ups (cellSpurs _cellSpursLFQueuePushBody). A popper parks in
+ * WAIT_SIGNAL naming the queue EA as its wait object; the producer only knows
+ * the queue. Latch first, then signal whoever is parked on it: the parking side
+ * re-checks the latch after publishing itself, so one of the two always sees
+ * the other and a wake-up cannot fall between them. */
+#define SPU_OBJ_LATCH_MAX 32
+static volatile uint32_t s_obj_latch[SPU_OBJ_LATCH_MAX];
+static void spu_obj_latch(uint32_t obj)
+{
+    for (int i = 0; i < SPU_OBJ_LATCH_MAX; i++) if (s_obj_latch[i] == obj) return;
+    for (int i = 0; i < SPU_OBJ_LATCH_MAX; i++) if (s_obj_latch[i] == 0) { s_obj_latch[i] = obj; return; }
+}
+int spu_obj_consume_wake(uint32_t obj)
+{
+    if (!obj) return 0;
+    for (int i = 0; i < SPU_OBJ_LATCH_MAX; i++)
+        if (s_obj_latch[i] == obj) { s_obj_latch[i] = 0; return 1; }
+    return 0;
+}
+int spu_lfq_wake_waiter(uint32_t wait_obj)
+{
+    wait_obj &= ~0xFu;
+    spu_obj_latch(wait_obj);
+    int n = 0;
+    for (int i = 0; i < SPU_PARKED_MAX; i++) {
+        uint64_t k = s_parked[i];
+        if (!k || s_parked_obj[i] != wait_obj) continue;
+        spu_taskset_signal_task((uint32_t)(k >> 32), (uint32_t)(k & 0xFFFFFFFFu) - 1u);
+        n++;
+    }
+    return n;
+}
+
 void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId)
 {
     if (!taskset_ea || taskId >= 128) return;

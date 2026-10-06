@@ -3203,6 +3203,26 @@ s32 _cellSpursLFQueueInitialize(u64 owner_ea, u64 queue_ea, u64 buffer_ea,
     uint32_t q = (uint32_t)queue_ea;
     for (uint32_t o = 0; o < 128; o += 4) vm_write32(q + o, 0);
 
+    /* ANY2ANY (direction 3): the real CellSyncLFQueue line, verified by running
+     * Drakengard 3's lifted SPU pop/complete code against it in a harness
+     * (spu_0001: pop body 0x9CB0, get-pointer 0xA248, complete 0x9AD8/0xA6C8).
+     * Its consumer reads direction at +0x24 and keeps all of its counters in
+     * +0x00..+0x0F; +0x0C is the push-waiter ring, not a modulus, so the
+     * layout below (tuned for another title's direction) would corrupt it. */
+    if (direction == 3) {
+        vm_write32(q + 0x10, size);
+        vm_write32(q + 0x14, depth);
+        vm_write64(q + 0x18, (u64)(uint32_t)buffer_ea);
+        vm_write32(q + 0x24, direction);
+        vm_write64(q + 0x70, (u64)(uint32_t)owner_ea);
+        memset(vm_base + (uint32_t)buffer_ea, 0, (size_t)size * depth);
+        static int _n3 = 0;
+        if (_n3++ < 8)
+            printf("[cellSpurs] _LFQueueInitialize(owner=0x%08X q=0x%08X buf=0x%08X size=%u depth=%u dir=3 ANY2ANY)\n",
+                   (u32)owner_ea, q, (u32)buffer_ea, size, depth);
+        return CELL_OK;
+    }
+
     /* W3 at +0x0C is the ring modulus the consumer reduces indices by: the
      * empty test is (W1-W0) mod 2*W3 and the buffer slot is index mod W3
      * (derived at 0x12914..0x129B8). Leaving it zero degenerated both and made
@@ -3228,6 +3248,70 @@ s32 _cellSpursLFQueueInitialize(u64 owner_ea, u64 queue_ea, u64 buffer_ea,
         printf("[cellSpurs] _LFQueueInitialize(owner=0x%08X q=0x%08X buf=0x%08X size=%u depth=%u dir=%u) -> BE line written\n",
                (u32)owner_ea, (u32)queue_ea, (u32)buffer_ea, size, depth, direction);
     return CELL_OK;
+}
+
+/* _cellSpursLFQueuePushBody(CellSpursLFQueue* queue, const void* buffer, u32 isBlocking)
+ *
+ * PPU producer for an ANY2ANY queue whose consumer is lifted SPU code. Derived
+ * from (and tested against, in a harness, through counter wrap and blocking
+ * waits) the consumer side in Drakengard 3's SPU image -- not from any
+ * emulator source:
+ *   +0x00 u16  pops completed        +0x06 u16  pops reserved
+ *   +0x08 u16  pushes (this side)    data slot  = pushes % depth, mod 2*depth
+ *   +0x04 u16  pop-waiter ring: tail[4:0] head[9:5] signalled[14:10], mod 30;
+ *              waiter ids at +0x32 + 2*(i % 15)
+ * A popper that finds the queue empty appends itself to the ring and sleeps
+ * in WAIT_SIGNAL. Each push must hand one registered-but-unsignalled waiter
+ * its wake-up (advance "signalled" and signal it): the SPU's own availability
+ * test subtracts signalled-but-not-woken waiters, so skipping that wedges the
+ * queue after the first wait. The whole update is one lock-line
+ * read-modify-write, so a concurrent SPU PUTLLC fails and retries. */
+extern int  spu_lfq_wake_waiter(uint32_t wait_obj);
+s32 _cellSpursLFQueuePushBody(u64 queue_ea, u64 buffer_ea, u32 isBlocking)
+{
+    uint32_t q = (uint32_t)queue_ea, src = (uint32_t)buffer_ea;
+    if (!q || !src) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
+    if (q & 127)    return (s32)0x80410910;                 /* ALIGN */
+    uint8_t* line = vm_base + q;
+    uint32_t dir = vm_read32(q + 0x24);
+    if (dir != 3) {
+        static int _w = 0;
+        if (_w++ < 4) printf("[cellSpurs] LFQueuePushBody q=0x%08X direction %u not supported (ANY2ANY only)\n", q, dir);
+        return (s32)0x80410909;                              /* PERM */
+    }
+    for (int spins = 0;; spins++) {
+        spu_lockline_lock();
+        uint32_t size  = vm_read32(q + 0x10), depth = vm_read32(q + 0x14);
+        uint32_t buf   = (uint32_t)vm_read64(q + 0x18), two = 2 * depth;
+        u16 pushed = ef_r16(q + 0x08), popped = ef_r16(q + 0x00);
+        if (!depth || (u32)(pushed + two - popped) % two >= depth) {   /* full */
+            spu_lockline_unlock();
+            if (!isBlocking) return (s32)0x80410901;         /* AGAIN */
+            if (spins == 2000) printf("[cellSpurs] LFQueuePushBody q=0x%08X full for 2s, still waiting\n", q);
+#ifdef _WIN32
+            Sleep(1);
+#else
+            usleep(1000);
+#endif
+            continue;
+        }
+        memcpy(vm_base + buf + (pushed % depth) * size, vm_base + src, size);
+        ef_w16(q + 0x08, (u16)((pushed + 1) % two));
+        int wake = 0;
+        u16 w = ef_r16(q + 0x04);
+        uint32_t tail = w & 31u, sig = (w >> 10) & 31u;
+        if (tail != sig) {
+            sig = (sig == 29u) ? 0u : sig + 1u;
+            ef_w16(q + 0x04, (u16)((w & ~(31u << 10)) | (sig << 10)));
+            wake = 1;
+        }
+        ef_line_end(q);
+        (void)line;
+        if (wake) spu_lfq_wake_waiter(q);
+        static int _n = 0;
+        if (_n++ < 8) printf("[cellSpurs] LFQueuePushBody q=0x%08X slot=%u%s\n", q, pushed % depth, wake ? " (woke waiter)" : "");
+        return CELL_OK;
+    }
 }
 
 s32 cellSpursLFQueueAttachLv2EventQueue(u64 queue_ea)
